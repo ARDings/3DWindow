@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="de">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Head Tracking 3D Box Effect Demo - XRChris">
+    <title>Head Tracking 3D | XRChris</title>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Stylesheets -->
+    <link rel="stylesheet" href="css/variables.css">
+    <link rel="stylesheet" href="css/headtrack.css">
+
+    <!-- Three.js -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+
+    <!-- MediaPipe Face Detection -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"
+        crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+</head>
+
+<body>
+    <!-- Background -->
+    <div class="bg-gradient"></div>
+
+    <!-- Camera Preview (small in corner) -->
+    <div class="camera-container">
+        <div class="fps-counter" id="fps-counter">0 FPS</div>
+        <video id="camera-feed" autoplay playsinline></video>
+        <div class="camera-label">Kamera</div>
+        <canvas id="face-canvas"></canvas>
+    </div>
+
+    <!-- 3D Canvas -->
+    <canvas id="three-canvas"></canvas>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <p class="loading-text">Initializing Camera...</p>
+        </div>
+    </div>
+
+    <!-- Permission Request -->
+    <div class="permission-overlay" id="permission-overlay" style="display: none;">
+        <div class="permission-content">
+            <div class="permission-icon">📷</div>
+            <h2>Camera Access Required</h2>
+            <p>This demo needs access to your webcam to track your head movements.</p>
+            <button id="start-btn" class="btn-primary">Start Camera</button>
+        </div>
+    </div>
+
+    <!-- Instructions -->
+    <div class="instructions" id="instructions" style="display: none;">
+        <p>Move your head <strong>left, right, up, down</strong> to see the 3D box effect</p>
+    </div>
+
+    <!-- Controls Panel - Simplified -->
+    <div class="sensitivity-controls" id="sensitivity-controls" style="display: none;">
+        <!-- Effect Strength -->
+        <div class="control-group">
+            <div class="sensitivity-label">Stärke</div>
+            <div class="sensitivity-buttons">
+                <button id="strength-minus" class="sensitivity-btn">−</button>
+                <span id="strength-value">0.40</span>
+                <button id="strength-plus" class="sensitivity-btn">+</button>
+            </div>
+        </div>
+
+        <!-- Smoothing -->
+        <div class="control-group">
+            <div class="sensitivity-label">Glättung</div>
+            <div class="sensitivity-buttons">
+                <button id="smoothing-minus" class="sensitivity-btn">−</button>
+                <span id="smoothing-value">0.15</span>
+                <button id="smoothing-plus" class="sensitivity-btn">+</button>
+            </div>
+        </div>
+
+        <!-- Hexagon Z Position -->
+        <div class="control-group">
+            <div class="sensitivity-label">Tiefe (Z)</div>
+            <div class="sensitivity-buttons">
+                <button id="zpos-minus" class="sensitivity-btn">−</button>
+                <span id="zpos-value">1.0</span>
+                <button id="zpos-plus" class="sensitivity-btn">+</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Script -->
+    <script src="js/headtrack.js"></script>
+</body>
+
+</html>
