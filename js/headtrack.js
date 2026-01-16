@@ -1,12 +1,10 @@
 /**
  * Head Tracking 3D - "Window Into Box" Effect
  * Uses MediaPipe Face Detection + Three.js
- * 
- * Creates a proper parallax box effect where:
- * - The screen acts as a window into a 3D box
- * - Grid walls align exactly to screen edges
- * - A hexagon floats in the center for depth reference
  */
+
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // DOM Elements
 const video = document.getElementById('camera-feed');
@@ -17,6 +15,7 @@ const permissionOverlay = document.getElementById('permission-overlay');
 const startBtn = document.getElementById('start-btn');
 const instructions = document.getElementById('instructions');
 const fpsCounter = document.getElementById('fps-counter');
+const controlsPanel = document.getElementById('sensitivity-controls');
 
 // FPS tracking
 let frameCount = 0;
@@ -35,32 +34,32 @@ let currentX = 0, currentY = 0;
 
 // Settings
 let smoothingAmount = 0.15;  // Lower = smoother
-let parallaxStrength = 0.40; // Effect strength multiplier
-
-// Physical Screen Dimensions (in cm) - fixed defaults since UI was removed
-let screenWidthCm = 60;
-let screenHeightCm = 34;
-let viewerDistanceCm = 60;
-
-// Screen Resolution (pixels) - for aspect ratio
-let screenResolutionX = 1920;
-let screenResolutionY = 1080;
+let parallaxStrength = 0.20; // Effect strength multiplier
 
 // Box dimensions
 const BOX_DEPTH = 100;      // Deep tunnel
-const GRID_DIVISIONS = 40;  // Grid line density (adjusted for depth)
+const GRID_DIVISIONS = 40;  // Grid line density
 
 // Off-axis projection constants
 const nearClip = 0.1;
 const farClip = 1000;
 
-// Smoothed head position in cm
-let headX = 0, headY = 0;
-
 // Scene objects
 let boxGroup;
-let hexagon;
-let hexagonZ = 1.0; // Default: In front of screen
+let worldGroup; // Group for everything to flip it
+let model; // The GLB Model
+let modelZ = 1.0; // Default Z position
+let modelBaseScale = 1.0; // Logical scale to fit screen
+let modelUserScale = 1.0; // User adjusted scale
+let modelOffsetX = 0.10; // User X offset
+let modelOffsetY = 0.0; // User Y offset
+let modelOffsetZ = 1.50; // User Z offset
+
+// Frame settings
+let frameWidth = 0.0;
+let frameColor = '#a855f7'; // Purple default for visibility
+let frameGroup; // Holds the 4 sides of the frame
+let instructionsMesh; // 3D Text Mesh
 
 /**
  * Initialize the application
@@ -69,6 +68,8 @@ init();
 
 async function init() {
     setupControls();
+    setupKeyboardEvents();
+    setupFileUpload();
 
     // Show permission overlay first
     loadingOverlay.classList.add('hidden');
@@ -82,12 +83,13 @@ async function init() {
         try {
             await initCamera();
             loadingOverlay.querySelector('.loading-text').textContent = 'Loading Face Detection...';
+            // Face Detection is still global/script-tag based
             await initFaceDetection();
             initThreeJS();
 
             loadingOverlay.classList.add('hidden');
-            instructions.style.display = 'block';
-            document.getElementById('sensitivity-controls').style.display = 'flex';
+            // instructions.style.display = 'block'; // Moved to 3D
+            controlsPanel.style.display = 'flex';
 
             animate();
         } catch (error) {
@@ -98,11 +100,54 @@ async function init() {
 }
 
 /**
+ * Setup File Upload
+ */
+function setupFileUpload() {
+    const fileInput = document.getElementById('model-upload');
+    if (fileInput) {
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                loadModel(url);
+            }
+        });
+    }
+}
+
+/**
+ * Setup Keyboard Events (Toggle Controls)
+ */
+function setupKeyboardEvents() {
+    window.addEventListener('keydown', (e) => {
+        if (e.key.toLowerCase() === 'k') {
+            const visitorCounter = document.querySelector('.visitor-counter');
+            const cameraContainer = document.querySelector('.camera-container');
+            const repoLink = document.querySelector('.repo-link');
+
+            if (controlsPanel.style.display === 'none') {
+                controlsPanel.style.display = 'flex';
+                if (instructionsMesh) instructionsMesh.visible = true;
+                if (visitorCounter) visitorCounter.style.display = 'flex';
+                if (cameraContainer) cameraContainer.style.display = 'block';
+                if (repoLink) repoLink.style.display = 'block';
+            } else {
+                controlsPanel.style.display = 'none';
+                if (instructionsMesh) instructionsMesh.visible = false;
+                if (visitorCounter) visitorCounter.style.display = 'none';
+                if (cameraContainer) cameraContainer.style.display = 'none';
+                if (repoLink) repoLink.style.display = 'none';
+            }
+        }
+    });
+}
+
+/**
  * Setup UI controls
  */
 function setupControls() {
     // Float control helper
-    const setupFloatControl = (valueId, minusId, plusId, initialValue, setter, step = 0.05, min = 0.01, max = 2.0) => {
+    const setupFloatControl = (valueId, minusId, plusId, initialValue, setter, step = 0.05, min = 0.01, max = 5.0) => {
         const valEl = document.getElementById(valueId);
         const minBtn = document.getElementById(minusId);
         const plusBtn = document.getElementById(plusId);
@@ -136,24 +181,127 @@ function setupControls() {
         smoothingAmount = val;
     }, 0.01, 0.01, 0.50);
 
-    // Hexagon Z Position Control (-5.0 to 5.0)
-    setupFloatControl('zpos-value', 'zpos-minus', 'zpos-plus', hexagonZ, (val) => {
-        hexagonZ = val;
-        if (hexagon) hexagon.position.z = hexagonZ;
-    }, 0.5, -20.0, 5.0);
+    // Scale Control (0.1 - 5.0)
+    setupFloatControl('scale-value', 'scale-minus', 'scale-plus', modelUserScale, (val) => {
+        modelUserScale = val;
+        updateModelTransform();
+    }, 0.1, 0.1, 5.0);
+
+    // Position X Control (-5.0 to 5.0)
+    setupFloatControl('pos-x-value', 'pos-x-minus', 'pos-x-plus', modelOffsetX, (val) => {
+        modelOffsetX = val;
+        updateModelTransform();
+    }, 0.1, -5.0, 5.0);
+
+    // Position Y Control (-5.0 to 5.0)
+    setupFloatControl('pos-y-value', 'pos-y-minus', 'pos-y-plus', modelOffsetY, (val) => {
+        modelOffsetY = val;
+        updateModelTransform();
+    }, 0.1, -5.0, 5.0);
+
+    // Position Z Control (-5.0 to 5.0)
+    setupFloatControl('pos-z-value', 'pos-z-minus', 'pos-z-plus', modelOffsetZ, (val) => {
+        modelOffsetZ = val;
+        updateModelTransform();
+    }, 0.1, -10.0, 5.0);
+
+    // Frame Width Control (0.0 to 2.0)
+    setupFloatControl('frame-w-value', 'frame-w-minus', 'frame-w-plus', frameWidth, (val) => {
+        frameWidth = val;
+        updateFrame();
+    }, 0.05, 0.0, 2.0);
+
+    // Frame Color Control
+    const colorPicker = document.getElementById('frame-color');
+    if (colorPicker) {
+        colorPicker.value = frameColor;
+        colorPicker.addEventListener('input', (e) => {
+            frameColor = e.target.value;
+            updateFrame();
+        });
+    }
 }
 
 /**
- * Update box geometry when resolution changes
+ * Create or Update the Frame (Rand)
  */
-function updateBoxGeometry() {
-    if (!boxGroup) return;
+function updateFrame() {
+    // If no box created yet, we can't size the frame
+    if (!boxGroup || !worldGroup) return;
 
-    // Remove old box
-    scene.remove(boxGroup);
+    if (!frameGroup) {
+        frameGroup = new THREE.Group();
+        worldGroup.add(frameGroup); // Attach to world so it stays with the box
+    }
 
-    // Create new box with updated aspect ratio
-    createBox();
+    // Clear old frame
+    while (frameGroup.children.length > 0) {
+        const child = frameGroup.children[0];
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) child.material.dispose();
+        frameGroup.remove(child);
+    }
+
+    console.log('Update Frame:', frameWidth, frameColor);
+
+    if (frameWidth <= 0.001) return; // Hidden
+
+    const { halfWidth, halfHeight } = boxGroup.userData;
+    const mat = new THREE.MeshBasicMaterial({ color: frameColor, side: THREE.DoubleSide });
+
+    // Z-Offset to prevent Z-fighting and ensure visibility
+    const zPos = 0.02;
+
+    // We create 4 planes growing INWARDS from the edge
+    // 1. Top
+    const topGeo = new THREE.PlaneGeometry(halfWidth * 2, frameWidth);
+    const topMesh = new THREE.Mesh(topGeo, mat);
+    topMesh.position.set(0, halfHeight - frameWidth / 2, zPos);
+    frameGroup.add(topMesh);
+
+    // 2. Bottom
+    const botGeo = new THREE.PlaneGeometry(halfWidth * 2, frameWidth);
+    const botMesh = new THREE.Mesh(botGeo, mat);
+    botMesh.position.set(0, -halfHeight + frameWidth / 2, zPos);
+    frameGroup.add(botMesh);
+
+    // 3. Left
+    const sideHeight = (halfHeight * 2) - (2 * frameWidth);
+    const leftGeo = new THREE.PlaneGeometry(frameWidth, sideHeight);
+    const leftMesh = new THREE.Mesh(leftGeo, mat);
+    leftMesh.position.set(-halfWidth + frameWidth / 2, 0, zPos);
+    frameGroup.add(leftMesh);
+
+    // 4. Right
+    const rightGeo = new THREE.PlaneGeometry(frameWidth, sideHeight);
+    const rightMesh = new THREE.Mesh(rightGeo, mat);
+    rightMesh.position.set(halfWidth - frameWidth / 2, 0, zPos);
+    frameGroup.add(rightMesh);
+}
+
+/**
+ * Update Model Transform (Scale & Position)
+ */
+function updateModelTransform() {
+    if (!model) return;
+    const s = modelBaseScale * modelUserScale;
+    model.scale.set(s, s, s);
+
+    // Apply position offsets
+    // Note: World is rotated 180 deg, so X and Y axes are inverted relative to screen
+    // We invert the applied values so (+) button moves object Right/Up on screen
+    model.position.x = -modelOffsetX;
+
+    // Y is updated in animate() to combine with floating effect
+
+    // Z is Depth. 0 is center. worldGroup is rotated 180 Y? No 180 Z.
+    // So Z axis is NOT inverted regarding Back/Front? 
+    // Normal ThreeJS: -Z is into screen (Far), +Z is out (Near).
+    // Rotate Z 180 changes X and Y. Z direction stays same relative to camera?
+    // Let's test. If User wants "Forward", they usually mean Closer.
+    // If I press (+), I expect it to come closer (+Z).
+    // Let's just add it.
+    model.position.z = modelZ + modelOffsetZ;
 }
 
 /**
@@ -193,6 +341,7 @@ async function initCamera() {
  * Initialize MediaPipe Face Detection
  */
 async function initFaceDetection() {
+    // Global FaceDetection object from script tag
     faceDetection = new FaceDetection({
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
     });
@@ -230,7 +379,6 @@ function onFaceResults(results) {
         targetX = (bbox.xCenter - 0.5) * 2;
         targetY = (bbox.yCenter - 0.5) * 2;
 
-        // Draw simple face indicator
         drawFaceIndicator(bbox);
     }
 }
@@ -247,16 +395,9 @@ function drawFaceIndicator(bbox) {
     const width = bbox.width * w;
     const height = bbox.height * h;
 
-    // Draw box
     faceCtx.strokeStyle = '#a855f7';
     faceCtx.lineWidth = 2;
     faceCtx.strokeRect(x, y, width, height);
-
-    // Draw center point
-    faceCtx.fillStyle = '#6366f1';
-    faceCtx.beginPath();
-    faceCtx.arc(bbox.xCenter * w, bbox.yCenter * h, 5, 0, Math.PI * 2);
-    faceCtx.fill();
 }
 
 /**
@@ -265,292 +406,281 @@ function drawFaceIndicator(bbox) {
 function initThreeJS() {
     // Scene
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x000000); // Pure black for infinite effect
+    scene.background = new THREE.Color(0x000000);
 
-    // Fog for infinite tunnel fade (black, starts at 10, ends at 60)
     scene.fog = new THREE.Fog(0x000000, 10, 60);
 
-    // Camera - we'll manually set the projection matrix
+    // Camera
     const aspect = window.innerWidth / window.innerHeight;
     threeCamera = new THREE.PerspectiveCamera(50, aspect, nearClip, farClip);
-    threeCamera.position.set(0, 0, 0); // Camera at origin (viewer position)
+    threeCamera.position.set(0, 0, 0);
 
     // Renderer
     renderer = new THREE.WebGLRenderer({
         canvas: threeCanvas,
-        antialias: true
+        antialias: true,
+        alpha: true
     });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
     // Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
     scene.add(ambientLight);
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.7);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
     directionalLight.position.set(2, 3, 4);
     scene.add(directionalLight);
 
-    const pointLight = new THREE.PointLight(0xa855f7, 1.5, 20);
-    pointLight.position.set(0, 0, -BOX_DEPTH / 2);
-    scene.add(pointLight);
+    // Fill light
+    const pLight = new THREE.PointLight(0xa855f7, 2, 20);
+    pLight.position.set(0, -2, 0);
+    scene.add(pLight);
+
+    // World Group (to flip everything)
+    worldGroup = new THREE.Group();
+    // Rotate 180 degrees on Z to fix "upside down" issue
+    worldGroup.rotation.z = Math.PI;
+    scene.add(worldGroup);
 
     // Create the box
     createBox();
 
-    // Create hexagon
-    createHexagon();
+    // Load Default Model
+    loadModel('assets/GLB/water_splash_spiral.glb');
 
-    // Handle resize
     window.addEventListener('resize', onWindowResize);
 }
 
 /**
- * Create the 5-sided box (4 walls + back)
- * Walls align exactly to screen edges
+ * Load GLB Model
+ */
+function loadModel(url) {
+    const loader = new GLTFLoader();
+
+    loader.load(url, (gltf) => {
+        // Remove old model if exists
+        if (model) {
+            worldGroup.remove(model);
+
+            // Optional: Dispose geometry/materials to free memory
+            model.traverse((child) => {
+                if (child.isMesh) {
+                    child.geometry.dispose();
+                    if (child.material) {
+                        if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                        else child.material.dispose();
+                    }
+                }
+            });
+        }
+
+        model = gltf.scene;
+
+        // Normalize size
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+
+        // Base scale to fit ~1.5 units
+        if (maxDim > 0) {
+            modelBaseScale = 1.5 / maxDim;
+        } else {
+            modelBaseScale = 1.0;
+        }
+
+        updateModelTransform();
+
+        // Add to worldGroup
+        worldGroup.add(model);
+        console.log('Model loaded:', url);
+
+    }, undefined, (error) => {
+        console.error('An error occurred loading the model:', error);
+        alert('Fehler beim Laden (CORS?). Nutze einen lokalen Server!');
+    });
+}
+
+/**
+ * Create the 5-sided box
  */
 function createBox() {
     boxGroup = new THREE.Group();
     boxGroup.name = 'box';
 
-    // Calculate screen aspect ratio
-    const aspect = screenResolutionX / screenResolutionY;
-
-    // World units for the "screen window"
-    // We use a base size and scale by aspect
+    const aspect = 1920 / 1080;
     const BASE_SIZE = 4;
     const halfWidth = BASE_SIZE * aspect / 2;
     const halfHeight = BASE_SIZE / 2;
 
-    // Grid material
     const gridMaterial = new THREE.LineBasicMaterial({
-        color: 0x6366f1,
-        opacity: 0.5,
-        transparent: true
+        color: 0x6366f1, opacity: 0.5, transparent: true
     });
-
-    // Glowing edge material
     const edgeMaterial = new THREE.LineBasicMaterial({
-        color: 0xa855f7,
-        opacity: 0.8,
-        transparent: true
+        color: 0xa855f7, opacity: 0.8, transparent: true
     });
 
-    /**
-     * Create a grid plane with lines
-     */
     function createGridPlane(width, height, divisionsW, divisionsH) {
         const geometry = new THREE.BufferGeometry();
         const points = [];
-
-        // Horizontal lines
         for (let i = 0; i <= divisionsH; i++) {
             const y = (i / divisionsH - 0.5) * height;
-            points.push(-width / 2, y, 0);
-            points.push(width / 2, y, 0);
+            points.push(-width / 2, y, 0, width / 2, y, 0);
         }
-
-        // Vertical lines
         for (let i = 0; i <= divisionsW; i++) {
             const x = (i / divisionsW - 0.5) * width;
-            points.push(x, -height / 2, 0);
-            points.push(x, height / 2, 0);
+            points.push(x, -height / 2, 0, x, height / 2, 0);
         }
-
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
         return new THREE.LineSegments(geometry, gridMaterial.clone());
     }
 
-    // === LEFT WALL ===
-    // Extends from left edge of screen into the scene
-    const leftWall = createGridPlane(BOX_DEPTH, halfHeight * 2, GRID_DIVISIONS, 10);
-    leftWall.rotation.y = Math.PI / 2;
-    leftWall.position.x = -halfWidth;
-    leftWall.position.z = -BOX_DEPTH / 2;
-    boxGroup.add(leftWall);
+    // Walls
+    const leftW = createGridPlane(BOX_DEPTH, halfHeight * 2, GRID_DIVISIONS, 10);
+    leftW.rotation.y = Math.PI / 2; leftW.position.set(-halfWidth, 0, -BOX_DEPTH / 2);
+    boxGroup.add(leftW);
 
-    // === RIGHT WALL ===
-    const rightWall = createGridPlane(BOX_DEPTH, halfHeight * 2, GRID_DIVISIONS, 10);
-    rightWall.rotation.y = -Math.PI / 2;
-    rightWall.position.x = halfWidth;
-    rightWall.position.z = -BOX_DEPTH / 2;
-    boxGroup.add(rightWall);
+    const rightW = createGridPlane(BOX_DEPTH, halfHeight * 2, GRID_DIVISIONS, 10);
+    rightW.rotation.y = -Math.PI / 2; rightW.position.set(halfWidth, 0, -BOX_DEPTH / 2);
+    boxGroup.add(rightW);
 
-    // === BOTTOM WALL (Floor) ===
-    const bottomWall = createGridPlane(halfWidth * 2, BOX_DEPTH, 10, GRID_DIVISIONS);
-    bottomWall.rotation.x = -Math.PI / 2;
-    bottomWall.position.y = -halfHeight;
-    bottomWall.position.z = -BOX_DEPTH / 2;
-    boxGroup.add(bottomWall);
+    const floor = createGridPlane(halfWidth * 2, BOX_DEPTH, 10, GRID_DIVISIONS);
+    floor.rotation.x = -Math.PI / 2; floor.position.set(0, -halfHeight, -BOX_DEPTH / 2);
+    boxGroup.add(floor);
 
-    // === TOP WALL (Ceiling) ===
-    const topWall = createGridPlane(halfWidth * 2, BOX_DEPTH, 10, GRID_DIVISIONS);
-    topWall.rotation.x = Math.PI / 2;
-    topWall.position.y = halfHeight;
-    topWall.position.z = -BOX_DEPTH / 2;
-    boxGroup.add(topWall);
+    const ceil = createGridPlane(halfWidth * 2, BOX_DEPTH, 10, GRID_DIVISIONS);
+    ceil.rotation.x = Math.PI / 2; ceil.position.set(0, halfHeight, -BOX_DEPTH / 2);
+    boxGroup.add(ceil);
 
-    // === BACK WALL ===
-    const backWall = createGridPlane(halfWidth * 2, halfHeight * 2, 10, 10);
-    backWall.position.z = -BOX_DEPTH;
-    boxGroup.add(backWall);
+    const back = createGridPlane(halfWidth * 2, halfHeight * 2, 10, 10);
+    back.position.z = -BOX_DEPTH;
+    boxGroup.add(back);
 
-    // === Screen edge frame (glowing border) ===
-    const frameGeometry = new THREE.BufferGeometry();
-    const framePoints = [
-        // Rectangle around screen edge at z=0
-        -halfWidth, -halfHeight, 0,
-        halfWidth, -halfHeight, 0,
-        halfWidth, -halfHeight, 0,
-        halfWidth, halfHeight, 0,
-        halfWidth, halfHeight, 0,
-        -halfWidth, halfHeight, 0,
-        -halfWidth, halfHeight, 0,
-        -halfWidth, -halfHeight, 0
-    ];
-    frameGeometry.setAttribute('position', new THREE.Float32BufferAttribute(framePoints, 3));
-    const screenFrame = new THREE.LineSegments(frameGeometry, edgeMaterial);
-    boxGroup.add(screenFrame);
-
-    scene.add(boxGroup);
-
-    // Store dimensions for projection
+    worldGroup.add(boxGroup);
     boxGroup.userData = { halfWidth, halfHeight };
+
+    updateFrame(); // Initialize frame
+    createInstructions(); // Add 3D text
 }
 
 /**
- * Create a hexagonal prism in the center
+ * Create 3D Instructions at Z=0
  */
-function createHexagon() {
-    // CylinderGeometry with 6 radial segments = hexagon
-    const radius = 0.8;
-    const height = 0.4;
-    const geometry = new THREE.CylinderGeometry(radius, radius, height, 6);
+function createInstructions() {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = 4096; // Huge width to prevent clipping
+    canvas.height = 512;
 
-    const material = new THREE.MeshStandardMaterial({
-        color: 0x6366f1,
-        metalness: 0.6,
-        roughness: 0.2,
-        emissive: 0x2a2a5a,
-        emissiveIntensity: 0.3
-    });
+    // Draw Text
+    ctx.fillStyle = 'rgba(0,0,0,0)'; // Transparent details
+    ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear
 
-    hexagon = new THREE.Mesh(geometry, material);
+    ctx.font = 'bold 50px Inter, sans-serif'; // Slightly larger font for better quality
+    ctx.fillStyle = 'white';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
 
-    // Position IN FRONT of the screen plane (positive Z = towards viewer)
-    // This makes the hexagon appear to float out of the monitor
-    hexagon.position.set(0, 0, hexagonZ);
-    hexagon.rotation.x = Math.PI / 2; // Face towards camera
+    // Shadow
+    ctx.shadowColor = 'black';
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetX = 2;
+    ctx.shadowOffsetY = 2;
 
-    // Add wireframe
-    const wireframeMaterial = new THREE.MeshBasicMaterial({
-        color: 0xa855f7,
-        wireframe: true,
+    const text1 = "Move your head left, right, up, down to see the 3D box effect.";
+    const text2 = "Press 'K' to toggle controls.";
+
+    ctx.fillText(text1, canvas.width / 2, canvas.height / 2 - 40);
+    ctx.fillText(text2, canvas.width / 2, canvas.height / 2 + 40);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    // texture.minFilter = THREE.LinearFilter; // Fix possible resizing artifacts? No defaults are usually ok for this size.
+
+    const material = new THREE.MeshBasicMaterial({
+        map: texture,
         transparent: true,
-        opacity: 0.3
+        side: THREE.DoubleSide
     });
-    const wireframe = new THREE.Mesh(geometry, wireframeMaterial);
-    hexagon.add(wireframe);
 
-    // Add edge highlight
-    const edges = new THREE.EdgesGeometry(geometry);
-    const lineMaterial = new THREE.LineBasicMaterial({ color: 0xa855f7, linewidth: 2 });
-    const edgeLines = new THREE.LineSegments(edges, lineMaterial);
-    hexagon.add(edgeLines);
+    // Aspect ratio of canvas
+    const aspect = canvas.width / canvas.height;
+    const height = 0.5; // World units height (reduced from 1.0)
+    const width = height * aspect;
 
-    scene.add(hexagon);
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
+
+    // Position at Top Center Z=0
+    // Box Top is at boxGroup.userData.halfHeight
+    const { halfHeight } = boxGroup.userData;
+
+    // Position slightly below top edge
+    mesh.position.set(0, halfHeight - 0.8, 0); // Z=0
+
+    // Fix mirroring: Scale X = -1
+    mesh.scale.x = -1;
+
+    // It should be part of worldGroup so it rotates with it
+    worldGroup.add(mesh);
+    instructionsMesh = mesh; // Store for toggling
 }
 
 /**
  * Update off-axis projection matrix
- * This creates the "window into world" effect (True3D style)
- * 
- * Key principle: The screen IS the window. The camera represents the viewer's eye
- * and only moves laterally. The frustum is adjusted asymmetrically so that
- * the screen edges always align with the viewport edges.
  */
 function updateOffAxisProjection() {
     if (!threeCamera || !boxGroup) return;
 
-    // Get box dimensions (this defines our "screen" size in world units)
     const { halfWidth, halfHeight } = boxGroup.userData;
-
-    // Eye position in world units (lateral movement only)
-    // The camera/eye is at Z = some distance in front of screen (screen is at Z=0)
-    const eyeDistance = 5; // Distance from screen to eye in world units
+    const eyeDistance = 5;
 
     // Map normalized face position to world units
-    // Uses parallaxStrength multiplier (controlled by UI)
-    // X inverted: head left in camera = see more left wall
     const eyeX = -currentX * halfWidth * parallaxStrength;
-    const eyeY = currentY * halfHeight * parallaxStrength; // No Y inversion - up is up
+    const eyeY = currentY * halfHeight * parallaxStrength;
 
-    // Off-axis projection calculation
-    // Screen corners in world space (screen at Z = 0)
-    const screenLeft = -halfWidth;
-    const screenRight = halfWidth;
-    const screenBottom = -halfHeight;
-    const screenTop = halfHeight;
-
-    // Project screen corners onto near plane
-    // Similar triangles: nearPlane / eyeDistance = projected / actual
     const nearOverDist = nearClip / eyeDistance;
+    const left = (-halfWidth - eyeX) * nearOverDist;
+    const right = (halfWidth - eyeX) * nearOverDist;
+    const bottom = (-halfHeight - eyeY) * nearOverDist;
+    const top = (halfHeight - eyeY) * nearOverDist;
 
-    const left = (screenLeft - eyeX) * nearOverDist;
-    const right = (screenRight - eyeX) * nearOverDist;
-    const bottom = (screenBottom - eyeY) * nearOverDist;
-    const top = (screenTop - eyeY) * nearOverDist;
-
-    // Set asymmetric frustum - this is the core of the effect!
     threeCamera.projectionMatrix.makePerspective(left, right, bottom, top, nearClip, farClip);
     threeCamera.projectionMatrixInverse.copy(threeCamera.projectionMatrix).invert();
-
-    // Position camera at eye position, looking straight ahead (NO rotation!)
     threeCamera.position.set(eyeX, eyeY, eyeDistance);
-
-    // Critical: Camera looks straight ahead, parallel to Z axis
-    // We use a manual rotation matrix instead of lookAt
     threeCamera.rotation.set(0, 0, 0);
     threeCamera.updateMatrixWorld();
 }
 
-/**
- * Handle window resize
- */
 function onWindowResize() {
     renderer.setSize(window.innerWidth, window.innerHeight);
-    // Projection matrix is set manually, so we don't need to update aspect
 }
 
-/**
- * Animation loop
- */
 function animate() {
     requestAnimationFrame(animate);
 
-    // Smooth interpolation towards target position
     currentX += (targetX - currentX) * smoothingAmount;
     currentY += (targetY - currentY) * smoothingAmount;
 
-    // Update off-axis projection for head-coupled perspective
     updateOffAxisProjection();
 
-    // Animate hexagon - gentle rotation and float
-    if (hexagon) {
+    // Gentle float for model
+    if (model) {
         const time = performance.now() * 0.001;
-        hexagon.rotation.z += 0.005;
-        hexagon.position.y = Math.sin(time * 0.5) * 0.1;
+        model.rotation.y += 0.005;
+
+        // Base Y is -0.5. 
+        // User Offset: (+) means UP on screen -> Decrements Y in inverted world.
+        // Float: Adds sine wave.
+        model.position.y = -0.5 - modelOffsetY + Math.sin(time * 0.5) * 0.05;
     }
 
     renderer.render(scene, threeCamera);
 
-    // FPS tracking
+    // FPS
     frameCount++;
     const now = performance.now();
     if (now - lastFpsUpdate >= 500) {
         currentFps = Math.round(frameCount * 1000 / (now - lastFpsUpdate));
         if (fpsCounter) fpsCounter.textContent = currentFps + ' FPS';
-        frameCount = 0;
-        lastFpsUpdate = now;
+        frameCount = 0; lastFpsUpdate = now;
     }
 }

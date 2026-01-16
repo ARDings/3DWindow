@@ -522,3 +522,106 @@ body {
         font-size: 12px;
     }
 }
+
+/* ===== Visitor Counter - Copied from main.css ===== */
+.visitor-counter {
+    display: flex;
+    justify-content: flex-start;
+    /* Align left */
+    padding: 0;
+    position: fixed;
+    bottom: 50px;
+    left: 40px;
+    transform: none;
+    /* Remove centering transform */
+    z-index: 90;
+    pointer-events: none;
+
+    /* 3D Perspective Effect */
+    transform: perspective(800px) rotateY(25deg) rotateX(10deg) translateZ(0);
+    transform-origin: left bottom;
+    opacity: 0.9;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.visitor-counter:hover {
+    opacity: 1;
+    transform: perspective(800px) rotateY(15deg) rotateX(5deg) scale(1.05);
+}
+
+.counter-frame {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 10px 20px;
+    background: rgba(20, 20, 30, 0.6);
+    /* Slightly darker background */
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    box-shadow:
+        0 10px 30px rgba(0, 0, 0, 0.5),
+        inset 0 0 20px rgba(99, 102, 241, 0.1);
+    /* Subtle inner glow */
+    border-radius: 12px;
+    /* Less rounded for tech look */
+    backdrop-filter: blur(10px);
+    pointer-events: auto;
+}
+
+.counter-label {
+    font-family: 'Inter', sans-serif;
+    /* Fallback for --font-primary */
+    font-family: var(--font-primary);
+    font-size: 12px;
+    /* Fallback for --text-xs */
+    font-size: var(--text-xs);
+    color: rgba(255, 255, 255, 0.6);
+    /* Fallback for --color-text-muted opacity */
+    color: var(--color-text-muted);
+    opacity: 0.6;
+}
+
+.counter-display {
+    display: flex;
+    align-items: center;
+}
+
+.counter-number {
+    font-family: 'Inter', sans-serif;
+    /* Fallback mostly */
+    font-family: var(--font-display);
+    font-size: 14px;
+    /* Fallback for --text-sm */
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: #a855f7;
+    /* Fallback for --color-accent or specific color in headtrack */
+    letter-spacing: 0.05em;
+    min-width: 60px;
+    text-align: center;
+}
+
+.counter-badge {
+    display: none;
+}
+
+/* Subtle pulse on load */
+@keyframes counterPulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.7;
+    }
+}
+
+.counter-number.loading {
+    animation: counterPulse 0.8s ease-in-out infinite;
+}
+
+.counter-number.error {
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 12px;
+}
